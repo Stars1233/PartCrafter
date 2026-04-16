@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import sys
 from glob import glob
@@ -66,7 +67,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--image_path", type=str, required=True)
-    parser.add_argument("--num_parts", type=int, required=True, help="number of parts to generate")
+    parser.add_argument("--num_parts", type=int, default=None, help="number of parts to generate (optional if --part_suggest is used)")
     parser.add_argument("--output_dir", type=str, default="./results")
     parser.add_argument("--tag", type=str, default=None)
     parser.add_argument("--seed", type=int, default=0)
@@ -77,9 +78,18 @@ if __name__ == "__main__":
     parser.add_argument("--use_flash_decoder", action="store_true")
     parser.add_argument("--rmbg", action="store_true")
     parser.add_argument("--render", action="store_true")
+    parser.add_argument("--part_suggest", action="store_true", help="use VLM to suggest num_parts automatically")
+    parser.add_argument("--style_transfer", action="store_true", help="apply Objaverse-style transfer to input image")
+    parser.add_argument("--part_provider", type=str, default="gemini", help="provider for part suggestion (default: gemini)")
+    parser.add_argument("--part_model", type=str, default=None, help="model name for part suggestion (default: gemini-3-flash-preview)")
+    parser.add_argument("--style_provider", type=str, default="gemini", help="provider for style transfer (default: gemini)")
+    parser.add_argument("--style_model", type=str, default=None, help="model name for style transfer (default: gemini-3.1-flash-image-preview)")
     args = parser.parse_args()
 
-    assert 1 <= args.num_parts <= MAX_NUM_PARTS, f"num_parts must be in [1, {MAX_NUM_PARTS}]"
+    if args.num_parts is not None:
+        assert 1 <= args.num_parts <= MAX_NUM_PARTS, f"num_parts must be in [1, {MAX_NUM_PARTS}]"
+    elif not args.part_suggest:
+        parser.error("Either --num_parts or --part_suggest must be specified.")
 
     # download pretrained weights
     partcrafter_weights_dir = "pretrained_weights/PartCrafter"
@@ -96,11 +106,45 @@ if __name__ == "__main__":
 
     set_seed(args.seed)
 
+    # create export directory early (style transfer saves here)
+    if not os.path.exists(args.output_dir):
+        os.makedirs(args.output_dir)
+    if args.tag is None:
+        args.tag = time.strftime("%Y%m%d_%H_%M_%S")
+    export_dir = os.path.join(args.output_dir, args.tag)
+    os.makedirs(export_dir, exist_ok=True)
+
+    image_path = args.image_path
+
+    # style transfer: convert real-world photo to Objaverse-style rendering
+    if args.style_transfer:
+        from src.utils.style_transfer_utils import stylize_for_objaverse
+        styled_path = os.path.join(export_dir, "styled_input.png")
+        try:
+            stylize_for_objaverse(image_path, styled_path, provider=args.style_provider, model_name=args.style_model)
+            image_path = styled_path
+            print(f"Style transfer complete: {styled_path}")
+        except Exception as e:
+            print(f"Warning: Style transfer failed ({e}), using original image.")
+
+    # VLM part suggestion
+    if args.part_suggest:
+        from src.utils.vlm_utils import suggest_num_parts
+        num_parts = suggest_num_parts(
+            image_path, MAX_NUM_PARTS,
+            mode="object",
+            provider=args.part_provider,
+            model_name=args.part_model,
+        )
+        print(f"VLM suggested {num_parts} parts")
+    else:
+        num_parts = args.num_parts
+
     # run inference
     outputs, processed_image = run_triposg(
         pipe,
-        image_input=args.image_path,
-        num_parts=args.num_parts,
+        image_input=image_path,
+        num_parts=num_parts,
         rmbg_net=rmbg_net,
         seed=args.seed,
         num_tokens=args.num_tokens,
@@ -113,20 +157,27 @@ if __name__ == "__main__":
         device=device,
     )
 
-    if not os.path.exists(args.output_dir):
-        os.makedirs(args.output_dir)
-    
-    if args.tag is None:
-        args.tag = time.strftime("%Y%m%d_%H_%M_%S")
-    
-    export_dir = os.path.join(args.output_dir, args.tag)
-    os.makedirs(export_dir, exist_ok=True)
-
     for i, mesh in enumerate(outputs):
         mesh.export(os.path.join(export_dir, f"part_{i:02}.glb"))
-    
+
     merged_mesh = get_colored_mesh_composition(outputs)
     merged_mesh.export(os.path.join(export_dir, "object.glb"))
+
+    # write manifest
+    manifest = {
+        "image_path": args.image_path,
+        "num_parts": num_parts,
+        "style_transferred": args.style_transfer,
+        "vlm_suggested": args.part_suggest,
+        "parts": [
+            {"index": i, "file": f"part_{i:02}.glb"}
+            for i in range(num_parts)
+        ],
+        "composite_file": "object.glb",
+    }
+    with open(os.path.join(export_dir, "manifest.json"), "w") as f:
+        json.dump(manifest, f, indent=2)
+
     print(f"Generated {len(outputs)} parts and saved to {export_dir}")
 
     if args.render:
