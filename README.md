@@ -77,6 +77,39 @@ The generated results will be saved to `./results/robot`. We provide several exa
 
 Specify `--rmbg` if you use custom images. **This will remove the background of the input image and resize it appropriately.**
 
+### VLM-Based Part Suggestion
+Instead of manually specifying `--num_parts`, you can use a VLM to automatically suggest the number of parts:
+```
+GEMINI_API_KEY=your_key python scripts/inference_partcrafter.py \
+  --image_path assets/images/np3_2f6ab901c5a84ed6bbdf85a67b22a2ee.png \
+  --part_suggest --tag robot --rmbg --render
+```
+This sends the image to a VLM (default: `gemini-3-flash-preview`) which analyzes the object and suggests an appropriate part count. You can override the provider or model:
+```
+--part_provider gemini --part_model gemini-3-flash-preview
+```
+
+### Style Transfer for Real-World Images
+PartCrafter was trained on rendered images from Objaverse. When using real-world photos, you can apply style transfer to bridge the domain gap:
+```
+GEMINI_API_KEY=your_key python scripts/inference_partcrafter.py \
+  --image_path real_photo.jpg \
+  --num_parts 4 --style_transfer --rmbg --render
+```
+This converts the input photo to an Objaverse-style 3D rendering (default model: `gemini-3.1-flash-image-preview`) before feeding it to the pipeline. The stylized image is saved as `styled_input.png` in the output directory. You can override the provider or model:
+```
+--style_provider gemini --style_model gemini-3.1-flash-image-preview
+```
+
+Both features can be combined:
+```
+GEMINI_API_KEY=your_key python scripts/inference_partcrafter.py \
+  --image_path real_photo.jpg \
+  --part_suggest --style_transfer --rmbg --render
+```
+
+The provider architecture is extensible -- adding a new provider (e.g., OpenAI) requires only a new file in `src/utils/providers/` implementing `suggest_num_parts()` and/or `stylize_for_objaverse()`.
+
 ### 3D Scene Generation
 <p align="center">
     <img width="90%" alt="pipeline", src="./assets/dining_room.gif">
@@ -92,6 +125,8 @@ The required model weights will be automatically downloaded:
 - PartCrafter-Scene model from [wgsxm/PartCrafter-Scene](https://huggingface.co/wgsxm/PartCrafter-Scene) → pretrained_weights/PartCrafter-Scene
 
 The generated results will be saved to `./results/dining_room`. We provide several example images from 3D-Front in `./assets/images_scene`. Their filenames start with recommended number of parts, e.g., `np3` which means 3 parts. You can also try other part count for the same input images. 
+
+The `--part_suggest` and `--style_transfer` flags are also available for scene-level generation.
 
 ## 💻 System Requirements
 A CUDA-enabled GPU with at least 8GB VRAM. You can reduce number of parts or number of tokens to save GPU memory. We set the number of tokens per part to `1024` on object level and `2048` on scene level by default for better quality. 

@@ -19,3 +19,4 @@ pyrender
 deepspeed
 wandb[media]
 colormaps
+google-genai>=1.0.0
